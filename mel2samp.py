@@ -28,10 +28,13 @@ import os
 import random
 import argparse
 import json
+import sys
+
+
+import numpy as np
+from scipy.io.wavfile import read
 import torch
 import torch.utils.data
-import sys
-from scipy.io.wavfile import read
 
 # We're using the audio processing from TacoTron2 to make sure it matches
 sys.path.insert(0, 'tacotron2')
@@ -54,7 +57,18 @@ def load_wav_to_torch(full_path):
     Loads wavdata into torch array
     """
     sampling_rate, data = read(full_path)
+    if len(data.shape) == 2:
+        data = np.squeeze(data[:,0])
     return torch.from_numpy(data).float(), sampling_rate
+
+def load_txt_to_torch(full_path):
+    """
+    Loads txt data into torch array
+    """
+    arr = np.genfromtxt(full_path, dtype=np.float32)
+    if arr.shape[0] == 0:
+        print(full_path)
+    return torch.from_numpy(arr).float()
 
 
 class Mel2Samp(torch.utils.data.Dataset):
@@ -63,17 +77,21 @@ class Mel2Samp(torch.utils.data.Dataset):
     spectrogram, audio pair.
     """
     def __init__(self, training_files, segment_length, filter_length,
-                 hop_length, win_length, sampling_rate, mel_fmin, mel_fmax):
+                 hop_length, win_length, sampling_rate, accel_sampling_rate, mel_fmin, mel_fmax):
         self.audio_files = files_to_list(training_files)
         random.seed(1234)
         random.shuffle(self.audio_files)
-        self.stft = TacotronSTFT(filter_length=filter_length,
-                                 hop_length=hop_length,
-                                 win_length=win_length,
-                                 sampling_rate=sampling_rate,
-                                 mel_fmin=mel_fmin, mel_fmax=mel_fmax)
         self.segment_length = segment_length
         self.sampling_rate = sampling_rate
+        self.accel_sampling_rate = accel_sampling_rate
+        self.sample_scale_factor = 1.0 * self.accel_sampling_rate / self.sampling_rate
+        self.accel_segment_length = int(self.segment_length * self.sample_scale_factor)
+        self.max_accel = 0
+        self.stft = TacotronSTFT(filter_length=int(filter_length * self.sample_scale_factor),
+                                 hop_length=int(hop_length * self.sample_scale_factor),
+                                 win_length=int(win_length * self.sample_scale_factor),
+                                 sampling_rate=sampling_rate,
+                                 mel_fmin=mel_fmin, mel_fmax=mel_fmax)
 
     def get_mel(self, audio):
         audio_norm = audio / MAX_WAV_VALUE
@@ -82,11 +100,25 @@ class Mel2Samp(torch.utils.data.Dataset):
         melspec = self.stft.mel_spectrogram(audio_norm)
         melspec = torch.squeeze(melspec, 0)
         return melspec
+    
+    def get_mel_accel(self, accel):
+        max_accel = torch.max(torch.abs(accel))
+        if max_accel > self.max_accel:
+            self.max_accel = max_accel
+        accel_norm = accel / self.max_accel
+        accel_norm = accel_norm.unsqueeze(0)
+        accel_norm = torch.autograd.Variable(accel_norm, requires_grad=False)
+        melspec = self.stft.mel_spectrogram(accel_norm)
+        melspec = torch.squeeze(melspec, 0)
+        return melspec
+
 
     def __getitem__(self, index):
         # Read audio
         filename = self.audio_files[index]
         audio, sampling_rate = load_wav_to_torch(filename)
+        accel_name = filename.replace('SoundScans', 'AccelScansComponents').replace('_Sound_Movement_', '_Movement_Z_').replace('.wav', '.txt')
+        accel = load_txt_to_torch(accel_name)
         if sampling_rate != self.sampling_rate:
             raise ValueError("{} SR doesn't match target {} SR".format(
                 sampling_rate, self.sampling_rate))
@@ -96,10 +128,14 @@ class Mel2Samp(torch.utils.data.Dataset):
             max_audio_start = audio.size(0) - self.segment_length
             audio_start = random.randint(0, max_audio_start)
             audio = audio[audio_start:audio_start+self.segment_length]
+            accel_start = int(audio_start *  self.sample_scale_factor)
+            accel = accel[accel_start:accel_start+self.accel_segment_length]
         else:
             audio = torch.nn.functional.pad(audio, (0, self.segment_length - audio.size(0)), 'constant').data
+            accel = torch.nn.functional.pad(accel, (0, self.accel_segment_length - accel.size(0)), 'constant').data
 
-        mel = self.get_mel(audio)
+        # mel = self.get_mel(audio)
+        mel = self.get_mel_accel(accel)
         audio = audio / MAX_WAV_VALUE
 
         return (mel, audio)
