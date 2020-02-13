@@ -171,7 +171,10 @@ if __name__ == "__main__":
 
     for filepath in filepaths:
         audio, sr = load_wav_to_torch(filepath)
-        melspectrogram = mel2samp.get_mel(audio)
+        accel_name = filepath.replace('SoundScans', 'AccelScansComponents').replace('_Sound_Movement_', '_Movement_Z_').replace('.wav', '.txt')
+        accel = load_txt_to_torch(accel_name)
+        melspectrogram = mel2samp.get_mel_accel(accel)
+        # melspectrogram = mel2samp.get_mel(audio)
         filename = os.path.basename(filepath)
         new_filepath = args.output_dir + '/' + filename + '.pt'
         print(new_filepath)
