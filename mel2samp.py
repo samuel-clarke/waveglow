@@ -30,7 +30,6 @@ import argparse
 import json
 import sys
 
-
 import numpy as np
 from scipy.io.wavfile import read
 import torch
@@ -90,7 +89,7 @@ class Mel2Samp(torch.utils.data.Dataset):
         self.stft = TacotronSTFT(filter_length=int(filter_length * self.sample_scale_factor),
                                  hop_length=int(hop_length * self.sample_scale_factor),
                                  win_length=int(win_length * self.sample_scale_factor),
-                                 sampling_rate=sampling_rate,
+                                 sampling_rate=accel_sampling_rate,
                                  mel_fmin=mel_fmin, mel_fmax=mel_fmax)
 
     def get_mel(self, audio):
@@ -136,6 +135,7 @@ class Mel2Samp(torch.utils.data.Dataset):
 
         # mel = self.get_mel(audio)
         mel = self.get_mel_accel(accel)
+
         audio = audio / MAX_WAV_VALUE
 
         return (mel, audio)
