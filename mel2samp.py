@@ -30,6 +30,7 @@ import argparse
 import json
 import sys
 
+import matplotlib.pyplot as plt
 import numpy as np
 from scipy.io.wavfile import read
 import torch
@@ -91,12 +92,17 @@ class Mel2Samp(torch.utils.data.Dataset):
                                  win_length=int(win_length * self.sample_scale_factor),
                                  sampling_rate=accel_sampling_rate,
                                  mel_fmin=mel_fmin, mel_fmax=mel_fmax)
+        self.stft_audio = TacotronSTFT(filter_length=filter_length,
+                                 hop_length=hop_length,
+                                 win_length=win_length,
+                                 sampling_rate=sampling_rate,
+                                 mel_fmin=mel_fmin, mel_fmax=mel_fmax)
 
     def get_mel(self, audio):
         audio_norm = audio / MAX_WAV_VALUE
         audio_norm = audio_norm.unsqueeze(0)
         audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
-        melspec = self.stft.mel_spectrogram(audio_norm)
+        melspec = self.stft_audio.mel_spectrogram(audio_norm)
         melspec = torch.squeeze(melspec, 0)
         return melspec
     
@@ -174,7 +180,14 @@ if __name__ == "__main__":
         accel_name = filepath.replace('SoundScans', 'AccelScansComponents').replace('_Sound_Movement_', '_Movement_Z_').replace('.wav', '.txt')
         accel = load_txt_to_torch(accel_name)
         melspectrogram = mel2samp.get_mel_accel(accel)
-        # melspectrogram = mel2samp.get_mel(audio)
+        melspectrogram_audio = mel2samp.get_mel(audio)
+        plt.subplot(2, 1, 1)
+        plt.title(os.path.basename(filepath))
+        plt.imshow(melspectrogram_audio)
+        plt.subplot(2, 1, 2)
+        plt.title(os.path.basename(accel_name))
+        plt.imshow(melspectrogram)
+        plt.show()
         filename = os.path.basename(filepath)
         new_filepath = args.output_dir + '/' + filename + '.pt'
         print(new_filepath)
