@@ -115,19 +115,18 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             os.makedirs(output_directory)
             os.chmod(output_directory, 0o775)
         print("output directory", output_directory)
+        wandb.init(project=wandb_project)
+        wandb.config.learning_rate = learning_rate
+        wandb.config.sigma = sigma
+        wandb.config.batch_size = batch_size
+        wandb.config.seed = seed
+        wandb.fp16_run = fp16_run
+        wandb.data_config = data_config
+        wandb.waveglow_config = waveglow_config
 
     if with_tensorboard and rank == 0:
         from tensorboardX import SummaryWriter
         logger = SummaryWriter(os.path.join(output_directory, 'logs'))
-    
-    wandb.init(project=wandb_project)
-    wandb.config.learning_rate = learning_rate
-    wandb.config.sigma = sigma
-    wandb.config.batch_size = batch_size
-    wandb.config.seed = seed
-    wandb.fp16_run = fp16_run
-    wandb.data_config = data_config
-    wandb.waveglow_config = waveglow_config
 
     model.train()
     epoch_offset = max(0, int(iteration / len(train_loader)))
@@ -156,7 +155,7 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             else:
                 loss.backward()
 
-            if since_valid_check % 4 == 0:
+            if rank ==0 and since_valid_check % 4 == 0:
                 try:
                     valid_batch = next(valid_iterator)
                 except StopIteration:
@@ -172,8 +171,7 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                         reduced_valid_loss = reduce_tensor(valid_loss.data, num_gpus).item()
                     else:
                         reduced_valid_loss = valid_loss.item()
-                if rank == 0:
-                    wandb.log({'valid_loss': reduced_valid_loss}, commit=False, step=iteration)
+                wandb.log({'valid_loss': reduced_valid_loss}, commit=False, step=iteration)
                 print("{}:\t{:.9f},\t{:.9f}".format(iteration, reduced_loss, reduced_valid_loss))
             else:
                 print("{}:\t{:.9f}".format(iteration, reduced_loss))
