@@ -37,6 +37,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from glow import WaveGlow, WaveGlowLoss
 from mel2samp import Mel2Samp
+import wandb
 
 def load_checkpoint(checkpoint_path, model, optimizer):
     assert os.path.isfile(checkpoint_path)
@@ -61,7 +62,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
 
 def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
           sigma, iters_per_checkpoint, batch_size, seed, fp16_run,
-          checkpoint_path, with_tensorboard):
+          checkpoint_path, with_tensorboard, wandb_project):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     #=====START: ADDED FOR DISTRIBUTED======
@@ -90,15 +91,23 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                                                       optimizer)
         iteration += 1  # next iteration is iteration + 1
 
-    trainset = Mel2Samp(**data_config)
+    trainset = Mel2Samp(train=True, **data_config)
+    validset = Mel2Samp(train=False, **data_config)
     # =====START: ADDED FOR DISTRIBUTED======
     train_sampler = DistributedSampler(trainset) if num_gpus > 1 else None
+    valid_sampler = DistributedSampler(validset) if num_gpus > 1 else None
     # =====END:   ADDED FOR DISTRIBUTED======
     train_loader = DataLoader(trainset, num_workers=1, shuffle=False,
                               sampler=train_sampler,
                               batch_size=batch_size,
                               pin_memory=False,
                               drop_last=True)
+    valid_loader = DataLoader(validset, num_workers=1, shuffle=False,
+                              sampler=valid_sampler,
+                              batch_size=batch_size * 4,
+                              pin_memory=False,
+                              drop_last=True)
+    valid_iterator = iter(valid_loader)
 
     # Get shared output_directory ready
     if rank == 0:
@@ -110,9 +119,20 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     if with_tensorboard and rank == 0:
         from tensorboardX import SummaryWriter
         logger = SummaryWriter(os.path.join(output_directory, 'logs'))
+    
+    wandb.init(project=wandb_project)
+    wandb.config.learning_rate = learning_rate
+    wandb.config.sigma = sigma
+    wandb.config.batch_size = batch_size
+    wandb.config.seed = seed
+    wandb.fp16_run = fp16_run
+    wandb.data_config = data_config
+    wandb.waveglow_config = waveglow_config
 
     model.train()
     epoch_offset = max(0, int(iteration / len(train_loader)))
+    since_checkpoint = 0
+    since_valid_check = 0
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in range(epoch_offset, epochs):
         print("Epoch: {}".format(epoch))
@@ -136,20 +156,48 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             else:
                 loss.backward()
 
+            if since_valid_check % 4 == 0:
+                try:
+                    valid_batch = next(valid_iterator)
+                except StopIteration:
+                    valid_iterator = iter(valid_loader)
+                    valid_batch = next(valid_iterator)
+                valid_mel, valid_audio = valid_batch
+                valid_mel = torch.autograd.Variable(valid_mel.cuda())
+                valid_audio = torch.autograd.Variable(valid_audio.cuda())
+                with torch.no_grad():
+                    valid_outputs = model((valid_mel, valid_audio))
+                    valid_loss = criterion(valid_outputs)
+                    if num_gpus > 1:
+                        reduced_valid_loss = reduce_tensor(valid_loss.data, num_gpus).item()
+                    else:
+                        reduced_valid_loss = valid_loss.item()
+                if rank == 0:
+                    wandb.log({'valid_loss': reduced_valid_loss}, commit=False, step=iteration)
+                print("{}:\t{:.9f},\t{:.9f}".format(iteration, reduced_loss, reduced_valid_loss))
+            else:
+                print("{}:\t{:.9f}".format(iteration, reduced_loss))
+
+
             optimizer.step()
 
-            print("{}:\t{:.9f}".format(iteration, reduced_loss))
-            if with_tensorboard and rank == 0:
-                logger.add_scalar('training_loss', reduced_loss, i + len(train_loader) * epoch)
+            if rank == 0:
+                wandb.log({'train_loss': reduced_loss}, step=iteration)
+                if with_tensorboard:
+                    logger.add_scalar('training_loss', reduced_loss, i + len(train_loader) * epoch)
 
-            if (iteration % iters_per_checkpoint == 0):
+            since_checkpoint += num_gpus
+            since_valid_check += 1
+
+            if since_checkpoint >= iters_per_checkpoint or iteration == 0:
                 if rank == 0:
                     checkpoint_path = "{}/waveglow_{}".format(
                         output_directory, iteration)
                     save_checkpoint(model, optimizer, learning_rate, iteration,
                                     checkpoint_path)
+                since_checkpoint = 0
 
-            iteration += 1
+            iteration += num_gpus
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
