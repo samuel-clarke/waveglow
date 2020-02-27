@@ -137,41 +137,14 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     for epoch in range(epoch_offset, epochs):
         print("Epoch: {}".format(epoch))
         for i, batch in enumerate(train_loader):
-            print('A')
-            model.zero_grad()            
+            model.zero_grad()
 
-            if rank ==0 and since_valid_check % 4 == 0:
-                print('B')
-                try:
-                    valid_batch = next(valid_iterator)
-                except StopIteration:
-                    valid_iterator = iter(valid_loader)
-                    valid_batch = next(valid_iterator)
-                valid_mel, valid_audio = valid_batch
-                valid_mel = torch.autograd.Variable(valid_mel.cuda())
-                valid_audio = torch.autograd.Variable(valid_audio.cuda())
-                with torch.no_grad():
-                    print('C')
-                    valid_outputs = model((valid_mel, valid_audio))
-                    valid_loss = criterion(valid_outputs)
-                    if num_gpus > 1:
-                        reduced_valid_loss = reduce_tensor(valid_loss.data, num_gpus).item()
-                    else:
-                        reduced_valid_loss = valid_loss.item()
-                wandb.log({'valid_loss': reduced_valid_loss}, commit=False, step=iteration)
-                print('D')
-                print("{}:\t{:.9f},\t{:.9f}".format(iteration, reduced_loss, reduced_valid_loss))
-            else:
-                print("{}:\t{:.9f}".format(iteration, reduced_loss))
-
-            print('E')
             mel, audio = batch
             mel = torch.autograd.Variable(mel.cuda())
             audio = torch.autograd.Variable(audio.cuda())
             outputs = model((mel, audio))
-
             loss = criterion(outputs)
-            print('F')
+
             if num_gpus > 1:
                 reduced_loss = reduce_tensor(loss.data, num_gpus).item()
             else:
@@ -182,12 +155,32 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                     scaled_loss.backward()
             else:
                 loss.backward()
-            print('G')
-            optimizer.step()
-            print('H')
+
+            if since_valid_check % 4 == 0:
+                try:
+                    valid_batch = next(valid_iterator)
+                except StopIteration:
+                    valid_iterator = iter(valid_loader)
+                    valid_batch = next(valid_iterator)
+                valid_mel, valid_audio = valid_batch
+                valid_mel = torch.autograd.Variable(valid_mel.cuda())
+                valid_audio = torch.autograd.Variable(valid_audio.cuda())
+                with torch.no_grad():
+                    valid_outputs = model((valid_mel, valid_audio))
+                    valid_loss = criterion(valid_outputs)
+                    if num_gpus > 1:
+                        reduced_valid_loss = reduce_tensor(valid_loss.data, num_gpus).item()
+                    else:
+                        reduced_valid_loss = valid_loss.item()
+                if rank == 0:
+                    wandb.log({'valid_loss': reduced_valid_loss}, commit=False, step=iteration)
+                    print("{}:\t{:.9f},\t{:.9f}".format(iteration, reduced_loss, reduced_valid_loss))
+            else:
+                print("{}:\t{:.9f}".format(iteration, reduced_loss))
+
+            optimizer.step())
 
             if rank == 0:
-                print('I')
                 wandb.log({'train_loss': reduced_loss}, step=iteration)
                 if with_tensorboard:
                     logger.add_scalar('training_loss', reduced_loss, i + len(train_loader) * epoch)
@@ -196,15 +189,13 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             since_valid_check += 1
 
             if since_checkpoint >= iters_per_checkpoint or iteration == 0:
-                print('J')
                 if rank == 0:
-                    print('K')
                     checkpoint_path = "{}/waveglow_{}".format(
                         output_directory, iteration)
                     save_checkpoint(model, optimizer, learning_rate, iteration,
                                     checkpoint_path)
                 since_checkpoint = 0
-            print('L')
+
             iteration += num_gpus
 
 if __name__ == "__main__":
