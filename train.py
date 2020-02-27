@@ -37,7 +37,6 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from glow import WaveGlow, WaveGlowLoss
 from mel2samp import Mel2Samp
-import wandb
 
 def load_checkpoint(checkpoint_path, model, optimizer):
     assert os.path.isfile(checkpoint_path)
@@ -111,10 +110,12 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
 
     # Get shared output_directory ready
     if rank == 0:
+        import wandb
         if not os.path.isdir(output_directory):
             os.makedirs(output_directory)
             os.chmod(output_directory, 0o775)
         print("output directory", output_directory)
+        os.environ['WANDB_DIR'] = os.path.abspath(output_directory)
         wandb.init(project=wandb_project)
         wandb.config.learning_rate = learning_rate
         wandb.config.sigma = sigma
