@@ -60,7 +60,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
                 'learning_rate': learning_rate}, filepath)
 
 def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
-          sigma, iters_per_checkpoint, batch_size, seed, fp16_run,
+          sigma, iters_per_checkpoint, batch_size, valid_batch_size, seed, fp16_run,
           checkpoint_path, with_tensorboard, wandb_project):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -103,7 +103,7 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                               drop_last=True)
     valid_loader = DataLoader(validset, num_workers=1, shuffle=False,
                               sampler=valid_sampler,
-                              batch_size=batch_size * 4,
+                              batch_size=valid_batch_size,
                               pin_memory=False,
                               drop_last=True)
     valid_iterator = iter(valid_loader)
@@ -133,6 +133,7 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
     epoch_offset = max(0, int(iteration / len(train_loader)))
     since_checkpoint = 0
     since_valid_check = 0
+    valid_check_frequency = 4
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in range(epoch_offset, epochs):
         print("Epoch: {}".format(epoch))
@@ -156,7 +157,7 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             else:
                 loss.backward()
 
-            if since_valid_check % 4 == 0:
+            if since_valid_check % valid_check_frequency == 0:
                 try:
                     valid_batch = next(valid_iterator)
                 except StopIteration:
@@ -178,7 +179,7 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             else:
                 print("{}:\t{:.9f}".format(iteration, reduced_loss))
 
-            optimizer.step())
+            optimizer.step()
 
             if rank == 0:
                 wandb.log({'train_loss': reduced_loss}, step=iteration)
